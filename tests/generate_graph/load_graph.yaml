@@ -1,0 +1,185 @@
+version: v2
+description: example
+removeTempFiles: false
+clientSettings:
+  retry: 3
+  concurrency: 10
+  channelBufferSize: 128
+  space: relation_graph
+  connection:
+    user: root
+    password: nebula
+    address: 192.168.31.147:9669
+  postStart:
+    commands: |
+      DROP SPACE IF EXISTS relation_graph;
+      CREATE SPACE IF NOT EXISTS relation_graph(partition_num=1, replica_factor=1, vid_type=INT64);
+      USE relation_graph;
+      CREATE TAG id(id string);
+      CREATE TAG email(email string);
+      CREATE TAG telephone(telephone string);
+      CREATE TAG province(province string);
+      CREATE EDGE id_email();
+      CREATE EDGE id_telephone();
+      CREATE EDGE id_province();
+    afterPeriod: 8s
+logPath: ./err/test.log
+files:
+  - path: ./data/node_id.csv
+    failDataPath: ./err/node_id.csv
+    batchSize: 128
+    # limit: 10
+    inOrder: false
+    type: csv
+    csv:
+      withHeader: false
+      withLabel: false
+      delimiter: ","
+    schema:
+      type: vertex
+      vertex:
+        vid:
+          index: 0
+          function: hash
+          type: int
+        tags:
+          - name: id
+            props:
+              - name: id
+                type: string
+                index: 0
+  - path: ./data/node_email.csv
+    failDataPath: ./err/node_email.csv
+    batchSize: 128
+    # limit: 10
+    inOrder: false
+    type: csv
+    csv:
+      withHeader: false
+      withLabel: false
+      delimiter: ","
+    schema:
+      type: vertex
+      vertex:
+        vid:
+          index: 0
+          function: hash
+          type: int
+        tags:
+          - name: email
+            props:
+              - name: email
+                type: string
+                index: 0
+  - path: ./data/node_telephone.csv
+    failDataPath: ./err/node_telephone.csv
+    batchSize: 128
+    # limit: 10
+    inOrder: false
+    type: csv
+    csv:
+      withHeader: false
+      withLabel: false
+      delimiter: ","
+    schema:
+      type: vertex
+      vertex:
+        vid:
+          index: 0
+          function: hash
+          type: int
+        tags:
+          - name: telephone
+            props:
+              - name: telephone
+                type: string
+                index: 0
+  - path: ./data/node_province.csv
+    failDataPath: ./err/node_province.csv
+    batchSize: 128
+    # limit: 10
+    inOrder: false
+    type: csv
+    csv:
+      withHeader: false
+      withLabel: false
+      delimiter: ","
+    schema:
+      type: vertex
+      vertex:
+        vid:
+          index: 0
+          function: hash
+          type: int
+        tags:
+          - name: province
+            props:
+              - name: province
+                type: string
+                index: 0
+  - path: ./data/edge_id_email.csv
+    failDataPath: ./err/edge_id_email.csv
+    batchSize: 128
+    inOrder: false
+    type: csv
+    csv:
+      withHeader: false
+      withLabel: false
+      delimiter: ","
+    schema:
+      type: edge
+      edge:
+        name: id_email
+        withRanking: false
+        srcVID:
+          index: 0
+          function: hash
+          type: int
+        dstVID:
+          index: 1
+          function: hash
+          type: int
+  - path: ./data/edge_id_telephone.csv
+    failDataPath: ./err/edge_id_telephone.csv
+    batchSize: 128
+    inOrder: false
+    type: csv
+    csv:
+      withHeader: false
+      withLabel: false
+      delimiter: ","
+    schema:
+      type: edge
+      edge:
+        name: id_telephone
+        withRanking: false
+        srcVID:
+          index: 0
+          function: hash
+          type: int
+        dstVID:
+          index: 1
+          function: hash
+          type: int
+  - path: ./data/edge_id_province.csv
+    failDataPath: ./err/edge_id_province.csv
+    batchSize: 128
+    inOrder: false
+    type: csv
+    csv:
+      withHeader: false
+      withLabel: false
+      delimiter: ","
+    schema:
+      type: edge
+      edge:
+        name: id_province
+        withRanking: false
+        srcVID:
+          index: 0
+          function: hash
+          type: int
+        dstVID:
+          index: 1
+          function: hash
+          type: int
