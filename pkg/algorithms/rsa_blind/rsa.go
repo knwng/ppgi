@@ -1,4 +1,4 @@
-package algorithms
+package rsa_blind
 
 import (
 	"math/big"

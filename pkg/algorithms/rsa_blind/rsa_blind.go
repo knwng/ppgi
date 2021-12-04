@@ -1,17 +1,28 @@
-package algorithms
+package rsa_blind
 
 import (
 	"bytes"
-	"crypto/md5"
+	// "crypto/md5"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha256"
-
+	// "crypto/sha256"
 	"log"
 	"math/big"
 )
 
-func HostGenerateRSAKeyPair(bits int) (*rsa.PrivateKey, *rsa.PublicKey, error) {
+type RSABlindIntersect struct {
+	firstHash Hasher
+	secondHash Hasher
+}
+
+func NewRSABlindIntersect(firstHash, secondHash string) *RSABlindIntersect {
+	return &RSABlindIntersect{
+		firstHash: getHasher(firstHash),
+		secondHash: getHasher(secondHash),
+	}
+}
+
+func (s *RSABlindIntersect) HostGenerateRSAKeyPair(bits int) (*rsa.PrivateKey, *rsa.PublicKey, error) {
 	privKey, err := rsa.GenerateKey(rand.Reader, bits)
 	if err != nil {
 		return nil, nil, err
@@ -20,18 +31,23 @@ func HostGenerateRSAKeyPair(bits int) (*rsa.PrivateKey, *rsa.PublicKey, error) {
 	return privKey, &privKey.PublicKey, nil
 }
 
-func HostOfflineHash(msgs []string, privKey *rsa.PrivateKey, ta [][]byte) {
+func (s *RSABlindIntersect) HostOfflineHash(msgs []string, privKey *rsa.PrivateKey) [][]byte {
+	ta := make([][]byte, len(msgs))
 	for i, msg := range msgs {
-		hi := sha256.Sum256([]byte(msg))
+		hi := s.firstHash.Sum([]byte(msg))
 		hiEnc := decryptRSA(privKey, bytesToBigInt(hi[:]))
-		hiHashed := md5.Sum(hiEnc.Bytes())
+		hiHashed := s.secondHash.Sum(hiEnc.Bytes())
 		ta[i] = hiHashed[:]
 	}
+	return ta
 }
 
-func ClientBlinding(msgs []string, pubKey *rsa.PublicKey, yb []*big.Int, rands []*big.Int) {
+func (s *RSABlindIntersect) ClientBlinding(msgs []string, pubKey *rsa.PublicKey) ([]*big.Int, []*big.Int) {
+	yb := make([]*big.Int, len(msgs))
+	rands := make([]*big.Int, len(msgs))
+
 	for i, msg := range msgs {
-		hi := sha256.Sum256([]byte(msg))
+		hi := s.firstHash.Sum([]byte(msg))
 		r, err := rand.Int(rand.Reader, pubKey.N)
 		if err != nil {
 			log.Fatal(err)
@@ -41,22 +57,27 @@ func ClientBlinding(msgs []string, pubKey *rsa.PublicKey, yb []*big.Int, rands [
 		rEnc := encryptRSA(pubKey, r)
 		yb[i] = getMod(big.NewInt(0).Mul(bytesToBigInt(hi[:]), rEnc), pubKey.N)
 	}
+	return yb, rands
 }
 
-func HostBlindSigning(yb []*big.Int, privKey *rsa.PrivateKey, zb []*big.Int) {
+func (s *RSABlindIntersect) HostBlindSigning(yb []*big.Int, privKey *rsa.PrivateKey) []*big.Int {
+	zb := make([]*big.Int, len(yb))
 	for i, e := range yb {
 		zb[i] = decryptRSA(privKey, e)
 	}
+	return zb
 }
 
-func ClientUnblinding(zb []*big.Int, pubKey *rsa.PublicKey, rands []*big.Int, tb [][]byte) {
+func (s *RSABlindIntersect) ClientUnblinding(zb []*big.Int, pubKey *rsa.PublicKey, rands []*big.Int) [][]byte {
+	tb := make([][]byte, len(zb))
 	for i, e := range zb {
-		tb_array := md5.Sum(getDivMod(e, rands[i], pubKey.N).Bytes())
+		tb_array := s.secondHash.Sum(getDivMod(e, rands[i], pubKey.N).Bytes())
 		tb[i] = tb_array[:]
 	}
+	return tb
 }
 
-func CompareIds(ta [][]byte, tb [][]byte) [][2]int {
+func (s *RSABlindIntersect) CompareIds(ta, tb [][]byte) [][2]int {
 	cmp_ret := make([][2]int, 0)
 	for i, m := range ta {
 		for j, n := range tb {
