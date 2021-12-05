@@ -1,4 +1,4 @@
-package algorithms
+package naive
 
 import (
 	"crypto/sha256"
