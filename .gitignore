@@ -17,3 +17,6 @@
 # python
 venv_py*/
 __pycache__/
+
+# vscode
+.vscode/

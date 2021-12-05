@@ -10,3 +10,22 @@
   - id_email
   - id_telephone
   - id_province
+
+## 使用
+### 生成随机图
+```bash
+python generate_random_graph.py -n 每类结点数量 -p 边生成概率 -d 生成图数据存放目录
+```
+
+### 部署nebula-graph和nebula-studio
+```bash
+./deploy_graph_and_studio.sh
+```
+
+### 下载、编译nebula-importer并向nebula-graph导入数据
+```bash
+./import_graph.sh
+```
+
+## TODO
+[ ] 提高图生成脚本的通用性

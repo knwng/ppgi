@@ -9,12 +9,13 @@ import (
 
 type GraphReader interface {}
 
+// NebulaReader uses nebula-go sdk to connect to nebula-graphd service
 type NebulaReader struct {
-    address     string
-    port        int
+    address     string  // address of nebula-graphd
+    port        int     // port of nebula-graphd
     username    string
     password    string
-    graphName   string
+    graphName   string  // name of graph(or space), all the operations are applied to this graph
     pool        *nebula.ConnectionPool
 }
 
@@ -45,6 +46,21 @@ func (s *NebulaReader) Close() {
     s.pool.Close()
 }
 
+/*
+GetMultiNeighbors gets all the neighbors of a given node.
+Params:
+    @name: String, node's name, such as '121904329086390421'
+    @edgeProp: map[string]string, whose key is the name of
+               edge and value is the name of neighbor's property. For example,
+               {'id_email': 'email', 'id_telephone':'telephone',
+               'id_province':'province'}
+
+Return:
+    @: map[string][]string, whose key is the property of neighbor and value is
+       the data list, assuming all the data is string. For example,
+       {'email': ['abc@gmail'], 'telephone': ['13133445432'],
+       'province': ['Shandong', 'Beijing']}
+*/
 func (s *NebulaReader) GetMultiNeighbors(name string, edgeProp map[string]string) (map[string][]string, error) {
     propList := make([]string, 0)
     queryList := make([]string, 0)
@@ -84,6 +100,15 @@ func (s *NebulaReader) GetMultiNeighbors(name string, edgeProp map[string]string
     return unwrappedDataDict, nil
 }
 
+/*
+GetSingleNeighbor gets a specific kind of neighbor of a given node
+Params:
+    @name: String, the name of given node
+    @edge: String, the name of edge to the desired neighbor, for example, 'id_email'
+    @prop: String, the property of neighbor, for example, 'email'
+
+Return:
+*/
 func (s *NebulaReader) GetSingleNeighbor(name, edge, prop string) ([]string, error) {
     query := fmt.Sprintf(
                 "USE %s; GO FROM hash(\"%s\") OVER %s YIELD properties($$).%s AS %s;",
@@ -115,6 +140,7 @@ func (s *NebulaReader) GetSingleNeighbor(name, edge, prop string) ([]string, err
     return unwrappedData, nil
 }
 
+// MultiQuery executes a list of queries sequentially and return a list of ResultSets
 func (s *NebulaReader) MultiQuery(queryList []string) ([]*nebula.ResultSet, error) {
     session, err := s.pool.GetSession(s.username, s.password)
     if err != nil {
@@ -140,6 +166,7 @@ func (s *NebulaReader) MultiQuery(queryList []string) ([]*nebula.ResultSet, erro
     return resultSets, nil
 }
 
+// Query executes a single query and return the ResultSet
 func (s *NebulaReader) Query(query string) (*nebula.ResultSet, error) {
     session, err := s.pool.GetSession(s.username, s.password)
     if err != nil {
