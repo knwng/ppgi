@@ -1,10 +1,12 @@
 package rsa_blind
 
 import (
-	"testing"
-	"math/big"
-	"crypto/rsa"
 	"crypto/rand"
+	"crypto/rsa"
+	"math/big"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestRSAUnofficial(t *testing.T) {
@@ -17,12 +19,13 @@ func TestRSAUnofficial(t *testing.T) {
 	b := 231
 	c := a * b
 
-	a_enc := encryptRSA(&privkey.PublicKey, big.NewInt(int64(a)))
-	b_enc := encryptRSA(&privkey.PublicKey, big.NewInt(int64(b)))
+	encA := encryptRSA(&privkey.PublicKey, big.NewInt(int64(a)))
+	encB := encryptRSA(&privkey.PublicKey, big.NewInt(int64(b)))
 
-	c_enc := big.NewInt(0).Mul(a_enc, b_enc)
+	encC := big.NewInt(0).Mul(encA, encB)
 
-	c_dec := decryptRSA(privkey, c_enc)
+	decC := decryptRSA(privkey, encC)
 
-	t.Logf("c: {%d}, c_dec: {%d}", c, c_dec.Int64())
+	t.Logf("c: {%d}, decC: {%d}", c, decC.Int64())
+	assert.Equal(t, int64(c), decC.Int64())
 }
