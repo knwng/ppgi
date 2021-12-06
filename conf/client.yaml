@@ -1,0 +1,11 @@
+role: client
+algorithm: raw
+mq:
+  type: pulsar
+  address: 127.0.0.1
+  port: 6650
+  topic: client
+kv:
+  type: redis
+  address: 127.0.0.1
+  port: 6379
