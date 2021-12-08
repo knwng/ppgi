@@ -12,11 +12,11 @@ const lookupURL = "pulsar://localhost:6650"
 func TestProducerConsumer(t *testing.T) {
 	topic := "my-topic"
 
-	consumer, err := NewConsumer(lookupURL, topic)
+	consumer, err := NewPulsarConsumer(lookupURL, topic)
 	assert.NoError(t, err)
 	defer consumer.Close()
 
-	producer, err := NewProducer(lookupURL, topic)
+	producer, err := NewPulsarProducer(lookupURL, topic)
 	assert.NoError(t, err)
 	defer producer.Close()
 

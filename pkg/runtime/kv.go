@@ -13,26 +13,26 @@ type KV interface {
 	Get(key string) (string, error)
 }
 
-type redisKV struct {
+type RedisKV struct {
 	rdb *redis.Client
 }
 
-func (kv *redisKV) Put(key string, val string) error {
+func (kv *RedisKV) Put(key string, val string) error {
 	return kv.rdb.Set(context.Background(), key, val, 0).Err()
 }
 
-func (kv *redisKV) Get(key string) (string, error) {
+func (kv *RedisKV) Get(key string) (string, error) {
 	return kv.rdb.Get(context.Background(), key).Result()
 }
 
-func NewKV(URL string) KV {
+func NewRedisKV(url, password string, db int) KV {
 	rdb := redis.NewClient(&redis.Options{
-		Addr:     URL,
-		Password: "",
+		Addr:     url,
+		Password: password,
 		DB:       0,
 	})
 
-	return &redisKV{
+	return &RedisKV{
 		rdb: rdb,
 	}
 }

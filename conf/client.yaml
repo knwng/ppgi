@@ -1,11 +1,15 @@
 role: client
-algorithm: raw
+algorithm:
+  type: raw
+  first_hash: sha256
+  second_hash: md5
 mq:
   type: pulsar
-  address: 127.0.0.1
-  port: 6650
-  topic: client
+  url: pulsar://localhost:6650
+  in_topic: client
+  out_topic: host
 kv:
   type: redis
-  address: 127.0.0.1
-  port: 6379
+  url: localhost:6379
+  password: ""
+  db: 0
