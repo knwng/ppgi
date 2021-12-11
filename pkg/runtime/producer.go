@@ -11,24 +11,24 @@ type Producer interface {
 	Close()
 }
 
-type pulsarProducer struct {
+type PulsarProducer struct {
 	client   pulsar.Client
 	producer pulsar.Producer
 }
 
-func (p *pulsarProducer) Send(payload []byte) error {
+func (p *PulsarProducer) Send(payload []byte) error {
 	_, err := p.producer.Send(context.Background(), &pulsar.ProducerMessage{
 		Payload: payload,
 	})
 	return err
 }
 
-func (p *pulsarProducer) Close() {
+func (p *PulsarProducer) Close() {
 	p.producer.Close()
 	p.client.Close()
 }
 
-func NewProducer(URL string, topic string) (Producer, error) {
+func NewPulsarProducer(URL string, topic string) (Producer, error) {
 	client, err := pulsar.NewClient(pulsar.ClientOptions{
 		URL: URL,
 	})
@@ -43,7 +43,7 @@ func NewProducer(URL string, topic string) (Producer, error) {
 		return nil, err
 	}
 
-	return &pulsarProducer{
+	return &PulsarProducer{
 		client:   client,
 		producer: producer,
 	}, nil

@@ -2,10 +2,8 @@ package rsa_blind
 
 import (
 	"bytes"
-	// "crypto/md5"
 	"crypto/rand"
 	"crypto/rsa"
-	// "crypto/sha256"
 	"log"
 	"math/big"
 )

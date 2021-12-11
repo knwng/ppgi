@@ -11,22 +11,22 @@ type Consumer interface {
 	Close()
 }
 
-type pulsarConsumer struct {
+type PulsarConsumer struct {
 	client   pulsar.Client
 	consumer pulsar.Consumer
 }
 
-func (c *pulsarConsumer) Receive() ([]byte, error) {
+func (c *PulsarConsumer) Receive() ([]byte, error) {
 	msg, err := c.consumer.Receive(context.Background())
 	return msg.Payload(), err
 }
 
-func (c *pulsarConsumer) Close() {
+func (c *PulsarConsumer) Close() {
 	c.consumer.Close()
 	c.client.Close()
 }
 
-func NewConsumer(URL string, topic string) (Consumer, error) {
+func NewPulsarConsumer(URL string, topic string) (Consumer, error) {
 	client, err := pulsar.NewClient(pulsar.ClientOptions{
 		URL: URL,
 	})
@@ -43,7 +43,7 @@ func NewConsumer(URL string, topic string) (Consumer, error) {
 		return nil, err
 	}
 
-	return &pulsarConsumer{
+	return &PulsarConsumer{
 		client:   client,
 		consumer: consumer,
 	}, nil

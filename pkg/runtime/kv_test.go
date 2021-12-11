@@ -10,7 +10,7 @@ import (
 const redisURL = "localhost:6379"
 
 func TestKV(t *testing.T) {
-	kv := NewKV(redisURL)
+	kv := NewRedisKV(redisURL, "", 0)
 
 	for i := 0; i < 10; i++ {
 		err := kv.Put(fmt.Sprintf("key-%d", i), fmt.Sprintf("val-%d", i))

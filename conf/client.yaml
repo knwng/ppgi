@@ -1,0 +1,15 @@
+role: client
+algorithm:
+  type: raw
+  first_hash: sha256
+  second_hash: md5
+mq:
+  type: pulsar
+  url: pulsar://localhost:6650
+  in_topic: client
+  out_topic: host
+kv:
+  type: redis
+  url: localhost:6379
+  password: ""
+  db: 0
