@@ -35,11 +35,14 @@ func main() {
 
 	// initialize kv
 	var kv runtime.KV
-	switch config.GetString("kv.type") {
+	kvType := config.GetString("kv.type")
+	switch kvType {
 	case "redis":
 		kv = runtime.NewRedisKV(config.GetString("kv.url"),
 								config.GetString("kv.password"),
 								config.GetInt("kv.db"))
+	default:
+		log.Fatalf("Unsupported kv type: %s", kvType)
 	}
 
 	// initialize mq producer and consumer
@@ -48,8 +51,9 @@ func main() {
 	mqURL := config.GetString("mq.url")
 	mqInTopic := config.GetString("mq.in_topic")
 	mqOutTopic := config.GetString("mq.out_topic")
+	mqType := config.GetString("mq.type")
 
-	switch config.GetString("mq.type") {
+	switch mqType {
 	case "pulsar":
 		if producer, err = runtime.NewPulsarProducer(mqURL, mqOutTopic); err != nil {
 			log.Fatalf("Initialize pulsar producer failed, err: %s", err)
@@ -57,6 +61,8 @@ func main() {
 		if consumer, err = runtime.NewPulsarConsumer(mqURL, mqInTopic); err != nil {
 			log.Fatalf("Initialize pulsar consumer failed, err: %s", err)
 		}
+	default:
+		log.Fatalf("Unsupported mq type: %s", mqType)
 	}
 
 	// initialize runtime
@@ -73,6 +79,8 @@ func main() {
 		if err != nil {
 			log.Fatalf("Initialize runtime failed, err: %s", err)
 		}
+	default:
+		log.Fatalf("Unsupported algorithm: %s", algorithmType)
 	}
 
 	intersectRuntime.Run()
