@@ -6,6 +6,7 @@ import (
 
 	flags "github.com/jessevdk/go-flags"
 	"github.com/spf13/viper"
+	"github.com/knwng/ppgi/pkg/graph"
 	"github.com/knwng/ppgi/pkg/runtime"
 	"github.com/knwng/ppgi/pkg/algorithms/rsa_blind"
 )
@@ -55,27 +56,52 @@ func main() {
 
 	switch mqType {
 	case "pulsar":
-		if producer, err = runtime.NewPulsarProducer(mqURL, mqOutTopic); err != nil {
+		schema, err := runtime.ReadSchema(config.GetString("mq.schema"))
+		if err != nil {
+			log.Fatalf("Read schema file failed, err: %s", err)
+		}
+		if producer, err = runtime.NewPulsarProducer(mqURL, mqOutTopic, &schema); err != nil {
 			log.Fatalf("Initialize pulsar producer failed, err: %s", err)
 		}
-		if consumer, err = runtime.NewPulsarConsumer(mqURL, mqInTopic); err != nil {
+		if consumer, err = runtime.NewPulsarConsumer(mqURL, mqInTopic, &schema); err != nil {
 			log.Fatalf("Initialize pulsar consumer failed, err: %s", err)
 		}
 	default:
 		log.Fatalf("Unsupported mq type: %s", mqType)
 	}
 
+	// initialize nebula graph client
+	nebula, err := graph.NewNebulaReadWriter(config.GetString("graph.address"),
+					config.GetInt("graph.port"),
+					config.GetString("graph.username"),
+					config.GetString("graph.password"),
+					config.GetString("graph.graph_name"))
+	if err != nil {
+		log.Fatalf("Initializing nebula graph failed, err: %s", err)
+	}
+
 	// initialize runtime
 	algorithmType := config.GetString("algorithm.type")
 	role := config.GetString("role")
+	nodes, err := graph.ParsePrincipleNodes(config.GetStringSlice("graph.principle_nodes"))
+	if err != nil {
+		log.Fatalf("Parsing principle node failed, err: %s", err)
+	}
+
 	var intersectRuntime runtime.Intersecter
 	switch algorithmType {
 	case "rsa":
-		intersect := rsa_blind.NewRSABlindIntersect(
+		intersect, err := rsa_blind.NewRSABlindIntersect(
+			config.GetInt("algorithm.key_bits"),
 			config.GetString("algorithm.first_hash"),
-			config.GetString("algorithm.second_hash"))
-		intersectRuntime, err = runtime.NewRSABlindRuntime(role, intersect,
-												producer, consumer, kv)
+			config.GetString("algorithm.second_hash"),
+			role)
+		if err != nil {
+			log.Fatalf("Initialize RSA Intersection failed, err: %s", err)
+		}
+		interval := config.GetInt("graph.fetch_interval")
+		intersectRuntime, err = runtime.NewRSABlindRuntime(role, interval,
+			intersect, producer, consumer, kv, nebula, nodes)
 		if err != nil {
 			log.Fatalf("Initialize runtime failed, err: %s", err)
 		}
