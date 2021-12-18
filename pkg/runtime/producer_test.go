@@ -9,7 +9,7 @@ import (
 const serverURL = "pulsar://localhost:6650"
 
 func TestSimpleProducer(t *testing.T) {
-	producer, err := NewPulsarProducer(serverURL, "my-topic")
+	producer, err := NewPulsarProducer(serverURL, "my-topic", nil)
 	assert.NoError(t, err)
 	defer producer.Close()
 
