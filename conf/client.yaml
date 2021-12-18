@@ -3,6 +3,16 @@ algorithm:
   type: raw
   first_hash: sha256
   second_hash: md5
+  key_bits: 4096
+graph:
+  address: 192.168.31.147
+  port: 9669
+  username: root
+  password: nebula
+  graph_name: relation_graph
+  principle_nodes:
+    - "id.id.collect_time" # format: {node_name}.{id_prop}.{time_prop}
+  fetch_interval: 300
 mq:
   type: pulsar
   url: pulsar://localhost:6650
