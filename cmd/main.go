@@ -92,10 +92,6 @@ func main() {
 	// initialize runtime
 	algorithmType := config.GetString("algorithm.type")
 	role := config.GetString("role")
-	// nodes, err := graph.ParsePrincipleNodes(config.GetStringSlice("graph.principle_nodes"))
-	// if err != nil {
-	// 	log.Fatalf("Parsing principle node failed, err: %s", err)
-	// }
 
 	var intersectRuntime runtime.Intersecter
 	switch algorithmType {
