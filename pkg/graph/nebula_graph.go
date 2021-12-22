@@ -3,37 +3,13 @@ package graph
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	log "github.com/sirupsen/logrus"
 	nebula "github.com/vesoft-inc/nebula-go/v2"
 )
-
-type GraphReadWriter interface {}
-
-type PrincipleNode struct {
-    Name string
-    Prop string
-    Time string
-}
-
-func ParsePrincipleNodes(nodeStrs []string) ([]PrincipleNode, error) {
-    nodes := make([]PrincipleNode, len(nodeStrs))
-    for i, node := range nodeStrs {
-        items := strings.Split(node, ".")
-        if len(items) != 3 {
-            return []PrincipleNode{}, errors.New(fmt.Sprintf("Principle node config format: {node_name}.{id_prop}.{time_prop}, but got: %s", node))
-        }
-        name, prop, time := items[0], items[1], items[2]
-        nodes[i] = PrincipleNode{
-            Name: name,
-            Prop: prop,
-            Time: time,
-        }
-    }
-    return nodes, nil
-}
 
 // NebulaReader uses nebula-go sdk to connect to nebula-graphd service
 type NebulaReadWriter struct {
@@ -42,20 +18,25 @@ type NebulaReadWriter struct {
     username        string
     password        string
     graphName       string  // name of graph(or space), all the operations are applied to this graph
+    neighborSteps   []int
     pool            *nebula.ConnectionPool
 }
 
 func NewNebulaReadWriter(address string, port int,
-        username, password, graphName string) (*NebulaReadWriter, error) {
-    log := nebula.DefaultLogger{}
+        username, password, graphName string, neighborSteps []int) (*NebulaReadWriter, error) {
+    nebulaLog := nebula.DefaultLogger{}
     hostAddress := nebula.HostAddress{Host: address, Port: port}
     hostList := []nebula.HostAddress{hostAddress}
     defaultPoolConfig := nebula.GetDefaultConf()
-    pool, err := nebula.NewConnectionPool(hostList, defaultPoolConfig, log)
+    pool, err := nebula.NewConnectionPool(hostList, defaultPoolConfig, nebulaLog)
     if err != nil {
         return nil, errors.New(fmt.Sprintf(
             "Fail to initialize the connection pool, host: %s, port: %d, %s",
             address, port, err))
+    }
+
+    if len(neighborSteps) > 2 {
+        log.WithField("neighbor_steps", neighborSteps).Fatal("neighbor_steps should have only 1 or 2 elements.")
     }
 
     return &NebulaReadWriter{
@@ -64,6 +45,7 @@ func NewNebulaReadWriter(address string, port int,
         username: username,
         password: password,
         graphName: graphName,
+        neighborSteps: neighborSteps,
         pool: pool,
     }, nil
 }
@@ -72,18 +54,39 @@ func (s *NebulaReadWriter) Close() {
     s.pool.Close()
 }
 
-func (s *NebulaReadWriter) LookupWithTimeLimit(node *PrincipleNode, timeRange [2]time.Time) ([]string, error) {
-    startTime := fmt.Sprintf("datetime(\"%s\")", timeRange[0].Format("2006-01-02T15:04:05.000000"))
-    endTime := fmt.Sprintf("datetime(\"%s\")", timeRange[1].Format("2006-01-02T15:04:05.000000"))
+func (s *NebulaReadWriter) LookupWithTimeLimit(node *Node, startTime, endTime *time.Time) ([]string, error) {
+    timeProp := fmt.Sprintf("%s.%s", node.Type, node.TimeProp)
+    var (
+        idProp, yield string
+        useVID bool
+    )
+    if len(node.DataProp) == 0 {
+        idProp = "VertexID"
+        yield = ""
+        useVID = true
+    } else {
+        idProp = fmt.Sprintf("%s.%s", node.Type, node.DataProp)
+        yield = fmt.Sprintf("YIELD %s", idProp)
+        useVID = false
+    }
 
-    timeProp := fmt.Sprintf("%s.%s", node.Name, node.Time)
-    idProp := fmt.Sprintf("%s.%s", node.Name, node.Prop)
+    var query string
+    if endTime == nil {
+        return []string{}, errors.New("endTime should not be nil")
+    }
+    if startTime != nil {
+        startTimeStr := fmt.Sprintf("datetime(\"%s\")", startTime.Format("2006-01-02T15:04:05.000000"))
+        endTimeStr := fmt.Sprintf("datetime(\"%s\")", endTime.Format("2006-01-02T15:04:05.000000"))
 
-    query := fmt.Sprintf("USE %s; LOOKUP ON %s WHERE %s > %s and %s < %s YIELD %s;",
-        s.graphName, node.Name, timeProp, startTime, timeProp, endTime, idProp)
+        query = fmt.Sprintf("USE %s; LOOKUP ON %s WHERE %s > %s and %s < %s %s;",
+        s.graphName, node.Type, timeProp, startTimeStr, timeProp, endTimeStr, yield)
+    } else {
+        endTimeStr := fmt.Sprintf("datetime(\"%s\")", endTime.Format("2006-01-02T15:04:05.000000"))
+        query = fmt.Sprintf("USE %s; LOOKUP ON %s WHERE %s < %s %s;",
+        s.graphName, node.Type, timeProp, endTimeStr, yield)
+    }
 
     resultSet, err := s.Query(query)
-
     if err != nil {
         return []string{}, err
     }
@@ -91,6 +94,7 @@ func (s *NebulaReadWriter) LookupWithTimeLimit(node *PrincipleNode, timeRange [2
     colNames := resultSet.GetColNames()
     rowNum := resultSet.GetRowSize()
     log.WithFields(log.Fields{
+        "query": query,
         "col_names": colNames,
         "num_row": rowNum,
         "result": resultSet,
@@ -99,17 +103,25 @@ func (s *NebulaReadWriter) LookupWithTimeLimit(node *PrincipleNode, timeRange [2
     unwrappedData := make([]string, rowNum)
     dataList, err := resultSet.GetValuesByColName(idProp)
     if err != nil {
-        return nil, errors.New(fmt.Sprintf("Reading data of col %s failed, err: %s\n", idProp, err))
+        return nil, errors.New(fmt.Sprintf("Failed to read data at col %s, err: %s\n", idProp, err))
     }
 
     for i, data := range dataList {
-        unwrappedData[i], err = data.AsString()
+        var err error
+        if useVID {
+            var vidInt int64
+            vidInt, err = data.AsInt()
+            unwrappedData[i] = strconv.FormatInt(vidInt, 10)
+        } else {
+            unwrappedData[i], err = data.AsString()
+        }
+
         if err != nil {
             log.WithFields(log.Fields{
                 "col": idProp,
                 "row": i,
                 "error": err,
-            }).Warn("Reading data failed, skip")
+            }).Warn("Failed to read data from value wrapper, skip")
             continue
         }
     }
@@ -117,66 +129,391 @@ func (s *NebulaReadWriter) LookupWithTimeLimit(node *PrincipleNode, timeRange [2
     return unwrappedData, nil
 }
 
-/*
-GetMultiNeighbors gets all the neighbors of a given node.
-Params:
-    @name: String, node's name, such as '121904329086390421'
-    @edgeProp: map[string]string, whose key is the name of
-               edge and value is the name of neighbor's property. For example,
-               {'id_email': 'email', 'id_telephone':'telephone',
-               'id_province':'province'}
-
-Return:
-    @: map[string][]string, whose key is the property of neighbor and value is
-       the data list, assuming all the data is string. For example,
-       {'email': ['abc@gmail'], 'telephone': ['13133445432'],
-       'province': ['Shandong', 'Beijing']}
-*/
-func (s *NebulaReadWriter) GetMultiNeighbors(name string, edgeProp map[string]string) (map[string][]string, error) {
-    propList := make([]string, 0)
-    queryList := make([]string, 0)
-    for edge, prop := range edgeProp {
-        propList = append(propList, prop)
-        queryList = append(queryList, fmt.Sprintf(
-            "USE %s; GO FROM hash(\"%s\") OVER %s YIELD properties($$).%s AS %s;",
-            s.graphName, name, edge, prop, prop))
+func (s *NebulaReadWriter) getVertices(ids []string, vertexRef string) (map[string]VertexData, error) {
+    var steps string
+    if len(s.neighborSteps) == 2 {
+        steps = fmt.Sprintf("%d TO %d", s.neighborSteps[0], s.neighborSteps[1])
+    } else {
+        steps = fmt.Sprintf("%d", s.neighborSteps[0])
     }
 
-    resultSetList, err := s.MultiQuery(queryList)
+    yield := fmt.Sprintf("id(%[1]s) AS src_id, properties(%[1]s) AS src_prop," +
+                         " head(tags(%[1]s)) AS src_tag;", vertexRef)
+
+    query := fmt.Sprintf("USE %s; GO %s STEPS FROM %s OVER * BIDIRECT YIELD " +
+                         "DISTINCT %s", s.graphName, steps,
+                         strings.Join(ids, ","), yield)
+
+    result, err := s.Query(query)
+    if err != nil {
+        log.WithFields(log.Fields{
+            "query": query,
+            "error": err,
+        }).Error("Failed to execute query")
+        return nil, err
+    }
+
+    colNames := result.GetColNames()
+    rowNum := result.GetRowSize()
+    log.WithFields(log.Fields{
+        "col_names": colNames,
+        "row_num": rowNum,
+    }).Debug()
+
+    ret := make(map[string]VertexData)
+
+    for i := 0; i < rowNum; i++ {
+        row, err := result.GetRowValuesByIndex(i)
+        if err != nil {
+            log.WithFields(log.Fields{
+                "row": i,
+                "error": err,
+            }).Warn("Failed to get row from result data, skip")
+            continue
+        }
+
+        vidInt, err := getIntFromCol(row, "src_id")
+        if err != nil {
+            log.WithFields(log.Fields{
+                "row_data": row,
+                "error": err,
+            }).Warn("Failed to get src_id col from row, skip")
+            continue
+        }
+        vid := strconv.FormatInt(vidInt, 10)
+
+        props, err := getMapFromCol(row, "src_prop")
+        if err != nil {
+            log.WithFields(log.Fields{
+                "row_data": row,
+                "error": err,
+            }).Warn("Failed to get src_id col from row, skip")
+            continue
+        }
+
+        tag, err := getStringFromCol(row, "src_tag")
+        if err != nil {
+            log.WithFields(log.Fields{
+                "row_data": row,
+                "error": err,
+            }).Warn("Failed to get src_tag col from row, skip")
+            continue
+        }
+
+        ret[vid] = VertexData{
+            VID: vid,
+            Tag: tag,
+            Props: props,
+        }
+        
+    }
+
+    return ret, nil
+}
+
+func (s *NebulaReadWriter) GetAllNeighborVertices(ids []string) (map[string]VertexData, error) {
+    unwrappedData := make(map[string]VertexData, 0)
+
+    srcData, err := s.getVertices(ids, "$^")
     if err != nil {
         return nil, err
     }
 
-    unwrappedDataDict := make(map[string][]string)
-    for i, resultSet := range resultSetList {
-        result, err := resultSet.GetValuesByColName(propList[i])
+    for k, v := range srcData {
+        unwrappedData[k] = v
+    }
+
+    dstData, err := s.getVertices(ids, "$$")
+    if err != nil {
+        return nil, err
+    }
+
+    for k, v := range dstData {
+        unwrappedData[k] = v
+    }
+
+    return unwrappedData, nil
+}
+
+func (s *NebulaReadWriter) GetAllNeighborEdges(ids []string) ([]EdgeData, error) {
+    var steps string
+    if len(s.neighborSteps) == 2 {
+        steps = fmt.Sprintf("%d TO %d", s.neighborSteps[0], s.neighborSteps[1])
+    } else {
+        steps = fmt.Sprintf("%d", s.neighborSteps[0])
+    }
+
+    query := fmt.Sprintf("USE %s; GO %s STEPS FROM %s OVER * BIDIRECT YIELD " +
+                         "DISTINCT src(edge) AS edge_src, dst(edge) AS edge_dst, " +
+                         "type(edge) AS edge_type, properties(edge) AS edge_prop",
+                         s.graphName, steps, strings.Join(ids, ","))
+
+    result, err := s.Query(query)
+    if err != nil {
+        return nil, err
+    }
+
+    colNames := result.GetColNames()
+    rowNum := result.GetRowSize()
+    log.WithFields(log.Fields{
+        "col_names": colNames,
+        "row_num": rowNum,
+    }).Debug()
+
+    unwrappedData := make([]EdgeData, 0)
+    for i := 0; i < rowNum; i++ {
+        row, err := result.GetRowValuesByIndex(i)
         if err != nil {
             log.WithFields(log.Fields{
-                "query": queryList[i],
+                "row": i,
                 "error": err,
-            }).Warn("Unwraping the result of query failed")
+            }).Warn("Failed to get row from result data, skip")
             continue
         }
-        if result == nil {
-            log.WithField("query", queryList[i]).Warn("The result of query is empty")
+
+        src, err := getIntFromCol(row, "edge_src")
+        if err != nil {
+            log.WithFields(log.Fields{
+                "row_data": row,
+                "error": err,
+            }).Warn("Failed to get edge_src col from row, skip")
             continue
         }
-        unwrappedDataDict[propList[i]] = make([]string, 0)
-        for j, data := range result {
-            unwrappedData, err := data.AsString()
-            if err != nil {
-                log.WithFields(log.Fields{
-                    "col": propList[i],
-                    "row": j,
-                    "error": err,
-                }).Warn("Unwraping data failed")
+
+        dst, err := getIntFromCol(row, "edge_dst")
+        if err != nil {
+            log.WithFields(log.Fields{
+                "row_data": row,
+                "error": err,
+            }).Warn("Failed to get edge_dst col from row, skip")
+            continue
+        }
+
+        eType, err := getStringFromCol(row, "edge_type")
+        if err != nil {
+            log.WithFields(log.Fields{
+                "row_data": row,
+                "error": err,
+            }).Warn("Failed to get edge_type col from row, skip")
+            continue
+        }
+
+        props, err := getMapFromCol(row, "edge_prop")
+        if err != nil {
+            log.WithFields(log.Fields{
+                "row_data": row,
+                "error": err,
+            }).Warn("Failed to get edge_prop col from row, skip")
+            continue
+        }
+
+        unwrappedData = append(unwrappedData, EdgeData{
+            Source: strconv.FormatInt(src, 10),
+            Destination: strconv.FormatInt(dst, 10),
+            Type: eType,
+            Props: props,
+        })
+
+    }
+
+    return unwrappedData, nil
+}
+
+func (s *NebulaReadWriter) AddVertexData(vertices []VertexData) error {
+    // classify vertex according to its tag
+    vertexDefine := make(map[string]string)
+    values := make(map[string][]string)
+
+    for _, v := range vertices {
+        if _, ok := vertexDefine[v.Tag]; !ok {
+            propNames := make([]string, len(v.Props))
+            for i, props := range v.Props {
+                propNames[i] = props[0]
             }
-            unwrappedDataDict[propList[i]] = append(unwrappedDataDict[propList[i]], unwrappedData)
+            vertexDefine[v.Tag] = fmt.Sprintf("%s (%s)", v.Tag, strings.Join(propNames, ", "))
+        }
+        if _, ok := values[v.Tag]; !ok {
+            values[v.Tag] = make([]string, 0)
+        }
+
+        propDatas := make([]string, len(v.Props))
+        for i, props := range v.Props {
+            // Prop: (key, type, value)
+            propDatas[i] = varToNebulaExpr(props[1], props[2])
+        }
+
+        values[v.Tag] = append(values[v.Tag], fmt.Sprintf("hash(\"%s\"):(%s)", v.VID, strings.Join(propDatas, ", ")))
+    }
+
+    for tag, define := range vertexDefine {
+        query := fmt.Sprintf("USE %s; INSERT VERTEX IF NOT EXISTS %s VALUES %s;", s.graphName, define, strings.Join(values[tag], ", "))
+
+        _, err := s.Query(query)
+        if err != nil {
+            log.WithFields(log.Fields{
+                "query": query,
+                "error": err,
+            }).Error("Failed to insert vertex data to graph database")
+            return err
         }
     }
 
-    return unwrappedDataDict, nil
+    return nil
 }
+
+func (s *NebulaReadWriter) AddEdgeData(edges []EdgeData) error {
+    edgeDefine := make(map[string]string)
+    values := make(map[string][]string)
+
+    for _, e := range edges {
+        if _, ok := edgeDefine[e.Type]; !ok {
+            propNames := make([]string, len(e.Props))
+            for i, props := range e.Props {
+                propNames[i] = props[0]
+            }
+            edgeDefine[e.Type] = fmt.Sprintf("%s (%s)", e.Type, strings.Join(propNames, ", "))
+        }
+        if _, ok := values[e.Type]; !ok {
+            values[e.Type] = make([]string, 0)
+        }
+
+        propDatas := make([]string, len(e.Props))
+        for i, props := range e.Props {
+            // Prop: (key, type, value)
+            propDatas[i] = varToNebulaExpr(props[1], props[2])
+        }
+
+        edgeVIDs := fmt.Sprintf("hash(\"%s\") -> hash(\"%s\")", e.Source, e.Destination)
+
+        values[e.Type] = append(values[e.Type], fmt.Sprintf("%s:(%s)", edgeVIDs, strings.Join(propDatas, ", ")))
+    }
+
+    for eType, define := range edgeDefine {
+        query := fmt.Sprintf("USE %s; INSERT EDGE IF NOT EXISTS %s VALUES %s;", s.graphName, define, strings.Join(values[eType], ", "))
+
+        _, err := s.Query(query)
+        if err != nil {
+            log.WithFields(log.Fields{
+                "query": query,
+                "error": err,
+            }).Error("Failed to insert edge data to graph database")
+            return err
+        }
+    }
+
+    return nil
+}
+
+// func (s *NebulaReadWriter) FetchVertexProps(vertexType string, ids []string) (map[string][][3]string, error) {
+//     query := fmt.Sprintf("USE %s; FETCH PROP ON %s %s;", s.graphName, vertexType, strings.Join(ids, ","))
+
+//     result, err := s.Query(query)
+//     if err != nil {
+//         return map[string][][3]string{}, err
+//     }
+
+//     colNames := result.GetColNames()
+//     rowNum := result.GetRowSize()
+//     log.WithFields(log.Fields{
+//         "col_names": colNames,
+//         "row_num": rowNum,
+//     }).Info()
+
+//     if len(ids) != rowNum {
+//         return map[string][][3]string{}, errors.New("Numbers of original data and result don't match")
+//     }
+
+//     vertexProps := make(map[string][][3]string, 0)
+//     for i := 0; i < rowNum; i++ {
+//         data, err := result.GetRowValuesByIndex(i)
+//         if err != nil {
+//             log.WithField("error", err).Warn()
+//             continue
+//         }
+
+//         raw, err := data.GetValueByColName("vertices_")
+//         if err != nil {
+//             log.WithField("error", err).Warn()
+//             continue
+//         }
+//         vtx, err := raw.AsNode()
+//         if err != nil {
+//             log.WithField("error", err).Warn()
+//             continue
+//         }
+    
+//         properties, err := vtx.Properties(vtx.GetTags()[0])
+//         if err != nil {
+//             log.WithField("error", err).Warn()
+//             continue
+//         }
+
+//         ret := make([][3]string, 0)
+//         for key, prop := range properties {
+//             ret = append(ret, [3]string{key, prop.GetType(), prop.String()})
+//         }
+
+//         vertexProps[ids[i]] = ret
+//     }
+
+//     return vertexProps, nil
+// }
+
+// func (s *NebulaReadWriter) FetchEdgeProps(edgeType string, edges [][2]string) ([][][3]string, error) {
+//     edgePatterns := make([]string, len(edges))
+//     for i, edge := range edges {
+//         edgePatterns[i] = fmt.Sprintf("%s -> %s", edge[0], edge[1])
+//     }
+//     query := fmt.Sprintf("USE %s; FETCH PROP ON %s %s;", s.graphName, edgeType, strings.Join(edgePatterns, ","))
+
+//     result, err := s.Query(query)
+//     if err != nil {
+//         return [][][3]string{}, err
+//     }
+
+//     colNames := result.GetColNames()
+//     rowNum := result.GetRowSize()
+//     log.WithFields(log.Fields{
+//         "col_names": colNames,
+//         "row_num": rowNum,
+//     }).Info()
+
+//     if len(edges) != rowNum {
+//         return [][][3]string{}, errors.New("Numbers of original data and result don't match")
+//     }
+
+//     edgeProps := make([][][3]string, 0)
+//     for i := 0; i < rowNum; i++ {
+//         row, err := result.GetRowValuesByIndex(i)
+//         if err != nil {
+//             log.WithField("error", err).Warn()
+//             continue
+//         }
+
+//         raw, err := row.GetValueByColName("edges_")
+//         if err != nil {
+//             log.WithField("error", err).Warn()
+//             continue
+//         }
+
+//         vtx, err := raw.AsRelationship()
+//         if err != nil {
+//             log.WithField("error", err).Warn()
+//             continue
+//         }
+
+//         properties := vtx.Properties()
+
+//         ret := make([][3]string, 0)
+//         for key, prop := range properties {
+//             ret = append(ret, [3]string{key, prop.GetType(), prop.String()})
+//         }
+
+//         edgeProps = append(edgeProps, ret)
+//     }
+
+//     return edgeProps, nil
+// }
 
 /*
 GetSingleNeighbor gets a specific kind of neighbor of a given node
@@ -276,10 +613,64 @@ func (s *NebulaReadWriter) Query(query string) (*nebula.ResultSet, error) {
     return result, nil
 }
 
-func checkResultSet(prefix string, res *nebula.ResultSet) error {
-    if !res.IsSucceed() {
-        return errors.New(fmt.Sprintf("%s, ErrorCode: %v, ErrorMsg: %s",
-                          prefix, res.GetErrorCode(), res.GetErrorMsg()))
-    }
-    return nil
-}
+// TODO(knwng): Fix this func later
+/*
+GetMultiNeighbors gets all the neighbors of a given node.
+Params:
+    @name: String, node's name, such as '121904329086390421'
+    @edgeProp: map[string]string, whose key is the name of
+               edge and value is the name of neighbor's property. For example,
+               {'id_email': 'email', 'id_telephone':'telephone',
+               'id_province':'province'}
+
+Return:
+    @: map[string][]string, whose key is the property of neighbor and value is
+       the data list, assuming all the data is string. For example,
+       {'email': ['abc@gmail'], 'telephone': ['13133445432'],
+       'province': ['Shandong', 'Beijing']}
+*/
+// func (s *NebulaReadWriter) GetMultiNeighbors(name string, edges []*Edge) (map[string][]string, error) {
+//     propList := make([]string, 0)
+//     queryList := make([]string, 0)
+//     for _, edge := range edges {
+//         propList = append(propList, edge.Props...)
+//         queryList = append(queryList, fmt.Sprintf(
+//             "USE %s; GO FROM hash(\"%s\") OVER %s YIELD properties($$).%s AS %s;",
+//             s.graphName, name, edge, prop, prop))
+//     }
+
+//     resultSetList, err := s.MultiQuery(queryList)
+//     if err != nil {
+//         return nil, err
+//     }
+
+//     unwrappedDataDict := make(map[string][]string)
+//     for i, resultSet := range resultSetList {
+//         result, err := resultSet.GetValuesByColName(propList[i])
+//         if err != nil {
+//             log.WithFields(log.Fields{
+//                 "query": queryList[i],
+//                 "error": err,
+//             }).Warn("Unwraping the result of query failed")
+//             continue
+//         }
+//         if result == nil {
+//             log.WithField("query", queryList[i]).Warn("The result of query is empty")
+//             continue
+//         }
+//         unwrappedDataDict[propList[i]] = make([]string, 0)
+//         for j, data := range result {
+//             unwrappedData, err := data.AsString()
+//             if err != nil {
+//                 log.WithFields(log.Fields{
+//                     "col": propList[i],
+//                     "row": j,
+//                     "error": err,
+//                 }).Warn("Unwraping data failed")
+//             }
+//             unwrappedDataDict[propList[i]] = append(unwrappedDataDict[propList[i]], unwrappedData)
+//         }
+//     }
+
+//     return unwrappedDataDict, nil
+// }

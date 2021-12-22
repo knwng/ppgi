@@ -1,0 +1,55 @@
+nodes:
+  - 
+    type: identity
+    related_edges:
+      - identity_email
+      - identity_telephone
+      - identity_province
+    props:
+      - data
+      - collect_time
+    time_prop: collect_time
+    # data_prop: data
+  -
+    type: email
+    related_edges:
+      - identity_email
+    props:
+      - data
+      - collect_time
+    time_prop: collect_time
+    # data_prop: data
+  -
+    type: telephone
+    related_edges:
+      - identity_telephone
+    props:
+      - data
+      - collect_time
+    time_prop: collect_time
+    # data_prop: data
+  -
+    type: province
+    related_edges:
+      - identity_province
+    props:
+      - data
+      - collect_time
+    time_prop: collect_time
+    # data_prop: data
+edges:
+  -
+    type: identity_email
+    props:
+      - collect_time
+    time_prop: collect_time
+  -
+    type: identity_telephone
+    props:
+      - collect_time
+    time_prop: collect_time
+  -
+    type: identity_province
+    props:
+      - collect_time
+    time_prop: collect_time

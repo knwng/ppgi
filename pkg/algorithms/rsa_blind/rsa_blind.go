@@ -12,12 +12,14 @@ import (
 type RSAStep string
 
 const (
-	StepHostSendPubKey = "HostSendPubkey"
-	StepHostHash = "HostHash"
-	StepHostBlindSign = "HostBlindSign"
-	StepClientReceivedPubKey = "ClientReceivedPubkey"
-	StepClientBlind = "ClientBlind"
-	StepClientUnblind = "ClientUnblind"
+	StepHostSendPubKey 	RSAStep = "HostSendPubkey"
+	StepHostHash 		RSAStep = "HostHash"
+	StepHostBlindSign 	RSAStep = "HostBlindSign"
+	StepClientRcvPubKey RSAStep = "ClientReceivedPubkey"
+	StepClientBlind 	RSAStep = "ClientBlind"
+	StepClientUnblind 	RSAStep = "ClientUnblind"
+	StepExchangeData	RSAStep = "ExchangeData"
+	StepShutdown		RSAStep = "Shutdown"
 )
 
 type RSABlindIntersect struct {
@@ -28,7 +30,7 @@ type RSABlindIntersect struct {
 }
 
 func NewRSABlindIntersect(bits int, firstHash, secondHash, role string) (*RSABlindIntersect, error) {
-	if role == "server" {
+	if role == "host" {
 		privKey, pubKey, err := generateRSAKeyPair(bits)
 		if err != nil {
 			return nil, err

@@ -6,6 +6,7 @@ import (
 	"io/ioutil"
 	"crypto/sha256"
 	"encoding/base64"
+	"github.com/knwng/ppgi/pkg/algorithms/rsa_blind"
 )
 
 type Key struct {
@@ -14,11 +15,11 @@ type Key struct {
 }
 
 type Message struct {
-	Algorithm 	string 		`json:"algorithm"`
-	Step		string		`json:"step"`
-	SessionKey	string		`json:"session_key"`
-	Data		[][]byte 	`json:"data"`
-	Key			Key			`json:"key"`
+	Algorithm 	string 				`json:"algorithm"`
+	Step		rsa_blind.RSAStep	`json:"step"`
+	SessionKey	string				`json:"session_key"`
+	Data		[][]byte 			`json:"data"`
+	Key			Key					`json:"key"`
 }
 
 func ReadSchema(filename string) (string, error) {
@@ -32,8 +33,8 @@ func ReadSchema(filename string) (string, error) {
 	return schemaStr, nil
 }
 
-func generateSessionKey(algorithm, step string) string {
+func generateSessionKey(algorithm string, step rsa_blind.RSAStep) string {
 	current := time.Now().String()
-	key := sha256.Sum256([]byte(strings.Join([]string{algorithm, step, current}, "-")))
-	return base64.StdEncoding.EncodeToString(key[:])
+	key := sha256.Sum256([]byte(strings.Join([]string{algorithm, string(step), current}, "-")))
+	return "" + base64.StdEncoding.EncodeToString(key[:])
 }

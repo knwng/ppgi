@@ -1,6 +1,6 @@
-role: client
+role: host
 conn_timeout: 60
-log_file: ./client.log
+log_file: ./host.log
 algorithm:
   type: rsa
   first_hash: sha256
@@ -11,14 +11,10 @@ graph:
   port: 9669
   username: root
   password: nebula
-  graph_name: relation_graph
+  graph_name: relation_graph_host
   graph_definition: ./conf/graph.yaml
   # principle_nodes:
   #   - "id.id.collect_time" # format: {node_name}.{id_prop}.{time_prop}
-  # edges:
-  #   - id_email
-  #   - id_telephone
-  #   - id_province
   neighbor_steps:
     - 1
     - 2
@@ -26,8 +22,8 @@ graph:
 mq:
   type: pulsar
   url: pulsar://192.168.31.147:6650
-  in_topic: client
-  out_topic: host
+  in_topic: host
+  out_topic: client
   schema: ./conf/pulsar_schema.json
 kv:
   type: redis

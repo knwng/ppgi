@@ -38,3 +38,12 @@ func BigIntsToBytesSlice(dataList []*big.Int) [][]byte {
 
 	return ret
 }
+
+func BytesSliceToBigInts(bytesSlice [][]byte) []*big.Int {
+	ret := make([]*big.Int, len(bytesSlice))
+	for i, bytes := range bytesSlice {
+		ret[i] = big.NewInt(0).SetBytes(bytes)
+	}
+
+	return ret
+}
