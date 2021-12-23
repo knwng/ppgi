@@ -9,7 +9,7 @@ RFC: [Nebula Hackathon RFC](https://docs.google.com/document/d/1AWWKMocy6VV27nzA
 - KV Database, redis is supported
 - Graph Database, NebulaGraph is supported
 
-
+scripts for deploying these services are located in `./tests/deploy/`
 
 ### 2. Prepare the configuration
 #### Client Configuration
