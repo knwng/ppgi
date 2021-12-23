@@ -29,3 +29,21 @@ func getDivMod(x, y, m *big.Int) *big.Int {
 	// return big.NewInt(0).Mod(big.NewInt(0).Div(x, y), m)
 	return getMod(getMul(x, big.NewInt(0).ModInverse(y, m)), m)
 }
+
+func BigIntsToBytesSlice(dataList []*big.Int) [][]byte {
+	ret := make([][]byte, len(dataList))
+	for i, data := range dataList {
+		ret[i] = data.Bytes()
+	}
+
+	return ret
+}
+
+func BytesSliceToBigInts(bytesSlice [][]byte) []*big.Int {
+	ret := make([]*big.Int, len(bytesSlice))
+	for i, bytes := range bytesSlice {
+		ret[i] = big.NewInt(0).SetBytes(bytes)
+	}
+
+	return ret
+}

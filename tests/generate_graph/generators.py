@@ -18,7 +18,7 @@ def gen_province():
 
 GENERATORS = {
     'email': gen_email,
-    'id': gen_id,
+    'identity': gen_id,
     'telephone': gen_telephone,
     'province': gen_province,
 }

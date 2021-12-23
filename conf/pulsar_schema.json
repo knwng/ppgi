@@ -1,0 +1,48 @@
+{
+    "name": "psi",
+    "type": "record",
+    "fields": [
+        {
+            "name": "algorithm",
+            "type": [
+                "string"
+            ]
+        },
+        {
+            "name": "step",
+            "type": [
+                "string"
+            ]
+        },
+        {
+            "name": "data",
+            "type": [
+                {
+                    "type": "array",
+                    "items": "bytes"
+                },
+                "null"
+            ]
+        },
+        {
+            "name": "pub_key",
+            "type": [
+                {
+                    "name": "key",
+                    "type": "record",
+                    "fields": [
+                        {
+                            "name": "e",
+                            "type": "int"
+                        },
+                        {
+                            "name": "n",
+                            "type": "bytes"
+                        }
+                    ]
+                },
+                "null"
+            ]
+        }
+    ]
+}

@@ -8,6 +8,7 @@ import (
 
 type Consumer interface {
 	Receive() ([]byte, error)
+	ReceiveStruct() (Message, error)
 	Close()
 }
 
@@ -21,12 +22,22 @@ func (c *PulsarConsumer) Receive() ([]byte, error) {
 	return msg.Payload(), err
 }
 
+func (c *PulsarConsumer) ReceiveStruct() (Message, error) {
+	msg, err := c.consumer.Receive(context.Background())
+	if err != nil {
+		return Message{}, err
+	}
+	var s Message
+	err = msg.GetSchemaValue(&s)
+	return s, err
+}
+
 func (c *PulsarConsumer) Close() {
 	c.consumer.Close()
 	c.client.Close()
 }
 
-func NewPulsarConsumer(URL string, topic string) (Consumer, error) {
+func NewPulsarConsumer(URL string, topic string, schema *string) (*PulsarConsumer, error) {
 	client, err := pulsar.NewClient(pulsar.ClientOptions{
 		URL: URL,
 	})
@@ -34,11 +45,17 @@ func NewPulsarConsumer(URL string, topic string) (Consumer, error) {
 		return nil, err
 	}
 
-	consumer, err := client.Subscribe(pulsar.ConsumerOptions{
-		Topic:            topic,
+	option := pulsar.ConsumerOptions{
+		Topic: topic,
 		SubscriptionName: "my-sub",
-		Type:             pulsar.Shared,
-	})
+		Type: pulsar.Shared,
+	}
+
+	if schema != nil {
+		option.Schema = pulsar.NewJSONSchema(*schema, nil)
+	}
+
+	consumer, err := client.Subscribe(option)
 	if err != nil {
 		return nil, err
 	}
