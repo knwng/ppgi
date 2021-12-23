@@ -3,15 +3,15 @@ package main
 import (
 	"os"
 	"path/filepath"
-
+	"github.com/spf13/viper"
+	log "github.com/sirupsen/logrus"
 	flags "github.com/jessevdk/go-flags"
-	"github.com/knwng/ppgi/pkg/algorithms/rsa_blind"
+
 	"github.com/knwng/ppgi/pkg/graph"
 	"github.com/knwng/ppgi/pkg/runtime"
 	log_utils "github.com/knwng/ppgi/pkg/log"
-	"github.com/spf13/viper"
-
-	log "github.com/sirupsen/logrus"
+	intersect_runtime "github.com/knwng/ppgi/pkg/intersect"
+	"github.com/knwng/ppgi/pkg/algorithms/rsa_blind"
 )
 
 type Options struct {
@@ -93,7 +93,7 @@ func main() {
 	algorithmType := config.GetString("algorithm.type")
 	role := config.GetString("role")
 
-	var intersectRuntime runtime.Intersecter
+	var intersectRuntime intersect_runtime.Intersecter
 	switch algorithmType {
 	case "rsa":
 		intersect, err := rsa_blind.NewRSABlindIntersect(
@@ -107,7 +107,7 @@ func main() {
 		interval := config.GetInt("graph.fetch_interval")
 		timeout := config.GetInt("conn_timeout")
 		graphDefinition := config.GetString("graph.graph_definition")
-		intersectRuntime, err = runtime.NewRSABlindRuntime(role, interval,
+		intersectRuntime, err = intersect_runtime.NewRSABlindRuntime(role, interval,
 			timeout, intersect, producer, consumer, kv, nebula, graphDefinition)
 		if err != nil {
 			log.Fatalf("Initialize runtime failed, err: %s", err)

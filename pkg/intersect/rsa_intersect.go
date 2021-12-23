@@ -1,27 +1,20 @@
-package runtime
+package intersect
 
 import (
-	"errors"
 	"fmt"
-	"io/ioutil"
-	"math/big"
-
-	"encoding/json"
 	"time"
-
+	"errors"
+	"math/big"
+	"io/ioutil"
+	"encoding/json"
 	"gopkg.in/yaml.v2"
 
 	log "github.com/sirupsen/logrus"
 
-	"github.com/knwng/ppgi/pkg/algorithms/rsa_blind"
 	"github.com/knwng/ppgi/pkg/graph"
+	"github.com/knwng/ppgi/pkg/runtime"
+	"github.com/knwng/ppgi/pkg/algorithms/rsa_blind"
 )
-
-type Intersecter interface {
-	Run() error
-	runClient() error
-	runHost() error
-}
 
 type RSABlindRuntime struct {
 	role 				string
@@ -29,18 +22,18 @@ type RSABlindRuntime struct {
 	connTimeout			int
 	algorithm			string
 	intersect 			*rsa_blind.RSABlindIntersect
-	producer 			Producer
-	consumer 			Consumer
-	kv 					KV
+	producer 			runtime.Producer
+	consumer 			runtime.Consumer
+	kv 					runtime.KV
 	graphClient			*graph.NebulaReadWriter
-	graphDefinition			*graph.Graph
-	// nodes				[]graph.PrincipleNode
+	graphDefinition		*graph.Graph
+	// nodes			[]graph.PrincipleNode
 	lastGraphFetchTime 	*time.Time
 }
 
 func NewRSABlindRuntime(role string, fetchInterval int, connTimeout int,
-		intersect *rsa_blind.RSABlindIntersect, producer Producer,
-		consumer Consumer, kv KV, graphClient *graph.NebulaReadWriter,
+		intersect *rsa_blind.RSABlindIntersect, producer runtime.Producer,
+		consumer runtime.Consumer, kv runtime.KV, graphClient *graph.NebulaReadWriter,
 		graphDefinitionFn string) (*RSABlindRuntime, error) {
 
 	data, err := ioutil.ReadFile(graphDefinitionFn)
@@ -88,6 +81,258 @@ func (s *RSABlindRuntime) Run() error {
 	}
 }
 
+func (s *RSABlindRuntime) runClient() error {
+	// get data from consumer
+	msgChan := make(chan runtime.Message)
+	go s.receiveMessage(msgChan)
+
+	fetchGraphTicker := time.NewTicker(time.Duration(s.fetchInterval) * time.Second)
+	defer fetchGraphTicker.Stop()
+
+	log.Info("Waiting for incoming message")
+	// client loop
+	for {
+		select {
+		case <-fetchGraphTicker.C:
+			log.Info("Fetch data from graph database periodically")
+			// check whether key exchanging finished
+			if !s.intersect.HasPubKey() {
+				log.Warn("The client hasn't got pubkey yet, skip")
+				continue
+			}
+
+			// fetch data
+			data, newTime, err := s.lookupNewData()
+			if err != nil {
+				log.Errorf("Failed to fetch data from graph database, err: %s", err)
+				continue
+			}
+
+			if len(data) == 0 {
+				var lastTime string
+				if s.lastGraphFetchTime == nil {
+					lastTime = "no start time"
+				} else {
+					lastTime = s.lastGraphFetchTime.String()
+				}
+				log.WithFields(log.Fields{
+					"start_time": lastTime,
+					"end_time": newTime,
+				}).Info("No new data found in graph database")
+				s.lastGraphFetchTime = &newTime
+				continue
+			}
+
+			yb, rands, err := s.intersect.ClientBlinding(data)
+			if err != nil {
+				log.WithField("data", data).Errorf("ClientBlinding failed, err: %s", err)
+				continue
+			}
+
+			// send message to mq
+			step := rsa_blind.StepClientBlind
+			sessionKey := runtime.GenerateSessionKey(s.algorithm, step)
+
+			if err = s.sendMessageOrError(&runtime.Message{
+				Algorithm: s.algorithm,
+				Step: step,
+				SessionKey: sessionKey,
+				Data: rsa_blind.BigIntsToBytesSlice(yb),
+			}); err != nil {
+				continue
+			}
+
+			// Send original data to kv
+			if err = s.sendOriginData(sessionKey, data); err != nil {
+				continue
+			}
+
+			// Send rands to kv
+			if err = s.sendRands(sessionKey, rands); err != nil {
+				continue
+			}
+
+			s.lastGraphFetchTime = &newTime
+			log.Info("Client got new data from db, blind it, and send to host")
+		case msg := <-msgChan:
+			// process received message
+			switch msg.Step {
+			case rsa_blind.StepHostSendPubKey:
+				log.Info("Client received pubkey from host")
+				if s.intersect.HasPubKey() {
+					log.Warning("Client has already had pubkey, skip")
+				}
+
+				if len(msg.Key.N) == 0 || msg.Key.E <= 0 {
+					log.WithField("msg", msg).Warning("Client received invalid pubkey")
+					s.sendShutdown(msg.SessionKey)
+					continue
+				}
+
+				s.intersect.SetPubKey(msg.Key.N, msg.Key.E)
+
+				// send ack message
+				s.sendMessageOrError(&runtime.Message{
+					Algorithm: s.algorithm,
+					Step: rsa_blind.StepClientRcvPubKey,
+					SessionKey: msg.SessionKey,
+				})
+			case rsa_blind.StepHostBlindSign:
+				log.Info("Client starts to unblind signs from host")
+
+				// get rands from kv
+				rands, err := s.getRands(msg.SessionKey)
+				if err != nil {
+					continue
+				}
+
+				tb := s.intersect.ClientUnblinding(rsa_blind.BytesSliceToBigInts(msg.Data), rands)
+
+				s.sendMessageOrError(&runtime.Message{
+					Algorithm: s.algorithm,
+					Step: rsa_blind.StepClientUnblind,
+					SessionKey: msg.SessionKey,
+					Data: tb,
+				})
+
+				// get origin data
+				data, err := s.getOriginData(msg.SessionKey)
+				if err != nil {
+					continue
+				}
+
+				// combine hash and data, and send to kv
+				if err = s.createAndSendHashIDMap(data, tb); err != nil {
+					continue
+				}
+
+				// delete rands
+				s.delRands(msg.SessionKey)
+				log.Info("Client unblind the sign from host and send the hash to host")
+			case rsa_blind.StepHostHash:
+				// compare hash with current ID
+				log.Info("Client starts to compare hash from host")
+				if err := s.matchIDAndSendData(&msg); err != nil {
+					continue
+				}
+			case rsa_blind.StepExchangeData:
+				// load data to nebula graph
+				if err := s.loadDataToGraphDB(&msg); err != nil {
+					continue
+				}
+			default:
+				log.WithField("msg", msg).Warning("Client received a message with wrong step")
+				continue
+			}
+		}
+		
+	}
+}
+
+func (s *RSABlindRuntime) runHost() error {
+	// pubkey exchange
+	s.pubKeyExchange()
+
+	// receive message from consumer
+	msgChan := make(chan runtime.Message)
+	go s.receiveMessage(msgChan)
+
+	fetchGraphTicker := time.NewTicker(time.Duration(s.fetchInterval) * time.Second)
+	defer fetchGraphTicker.Stop()
+
+	log.Info("Waiting for incoming message")
+	// host loop
+	for {
+		select {
+		case <-fetchGraphTicker.C:
+			log.Info("Fetch data from graph database periodically")
+			data, newTime, err := s.lookupNewData()
+			if err != nil {
+				log.Errorf("Failed to fetch data from graph database, err: %s", err)
+				continue
+			}
+
+			if len(data) == 0 {
+				var lastTime string
+				if s.lastGraphFetchTime == nil {
+					lastTime = "no start time"
+				} else {
+					lastTime = s.lastGraphFetchTime.String()
+				}
+				log.WithFields(log.Fields{
+					"start_time": lastTime,
+					"end_time": newTime,
+				}).Info("No new data found in graph database")
+				s.lastGraphFetchTime = &newTime
+				continue
+			}
+
+			ta := s.intersect.HostOfflineHash(data)
+
+			// send hash-data map to kv
+			hashDataMap := make(map[string]string)
+			for i, hash := range ta {
+				hashDataMap[string(hash)] = data[i]
+			}
+			if err = s.kv.HashPut("hash_id_map", hashDataMap); err != nil {
+				log.WithFields(log.Fields{
+					"hash_data_map": hashDataMap,
+					"error": err,
+				}).Error("Failed to send hash-data map to kv")
+				continue
+			}
+
+			step := rsa_blind.StepHostHash
+
+			sessionKey := runtime.GenerateSessionKey(s.algorithm, step)
+
+			if err = s.sendMessageOrError(&runtime.Message{
+				Algorithm: s.algorithm,
+				Step: step,
+				SessionKey: sessionKey,
+				Data: ta,
+			}); err != nil {
+				continue
+			}
+
+			s.lastGraphFetchTime = &newTime
+			log.Info("Host got data from graph db, calculated hash and sent it to client")
+		case msg := <-msgChan:
+			// process message received from mq
+			switch msg.Step {
+			case rsa_blind.StepClientBlind:
+				log.Info("Host starts to blind sign hash from client")
+				zb := s.intersect.HostBlindSigning(rsa_blind.BytesSliceToBigInts(msg.Data))
+				s.sendMessageOrError(&runtime.Message{
+					Algorithm: s.algorithm,
+					Step: rsa_blind.StepHostBlindSign,
+					SessionKey: msg.SessionKey,
+					Data: rsa_blind.BigIntsToBytesSlice(zb),
+				})
+			case rsa_blind.StepClientUnblind:
+				// compare hash with current ID
+				log.Info("Host starts to compare hash from client")
+				if err := s.matchIDAndSendData(&msg); err != nil {
+					continue
+				}
+			case rsa_blind.StepClientRcvPubKey:
+				// consume reluctant pubkey ack message
+				log.Info("Host received pubkey ack from client after key exchange, skip")
+			case rsa_blind.StepExchangeData:
+				// load data to nebula graph
+				if err := s.loadDataToGraphDB(&msg); err != nil {
+					continue
+				}
+			default:
+				log.WithField("msg", msg).Warning("Host received a message with wrong step")
+				continue
+			}
+		}
+	}
+
+}
+
+
 func (s *RSABlindRuntime) lookupNewData() ([]string, time.Time, error) {
 	totalData := make([]string, 0)
 
@@ -104,7 +349,7 @@ func (s *RSABlindRuntime) lookupNewData() ([]string, time.Time, error) {
 	return totalData, current, nil
 }
 
-func (s *RSABlindRuntime) receiveMessage(c chan Message) {
+func (s *RSABlindRuntime) receiveMessage(c chan runtime.Message) {
 	for {
 		msg, err := s.consumer.ReceiveStruct()
 		if err != nil {
@@ -116,7 +361,7 @@ func (s *RSABlindRuntime) receiveMessage(c chan Message) {
 }
 
 func (s *RSABlindRuntime) sendShutdown(sessionKey string) {
-	if err := s.producer.SendStruct(&Message{
+	if err := s.producer.SendStruct(&runtime.Message{
 		Algorithm: s.algorithm,
 		Step: rsa_blind.StepShutdown,
 	}); err != nil {
@@ -128,7 +373,7 @@ func (s *RSABlindRuntime) sendShutdown(sessionKey string) {
 	}
 }
 
-func (s *RSABlindRuntime) sendMessageOrError(msg *Message) error {
+func (s *RSABlindRuntime) sendMessageOrError(msg *runtime.Message) error {
 	if err := s.producer.SendStruct(msg); err != nil {
 		log.WithFields(log.Fields{
 			"connection_info": s.producer.GetConnectionInfo(),
@@ -140,9 +385,6 @@ func (s *RSABlindRuntime) sendMessageOrError(msg *Message) error {
 	return nil
 }
 
-func (s *RSABlindRuntime) compareIDs() {
-
-}
 
 func (s *RSABlindRuntime) getRands(sessionKey string) ([]*big.Int, error) {
 	randsStr, err := s.kv.HashGet("rand", sessionKey)
@@ -267,7 +509,7 @@ func (s *RSABlindRuntime) getMatchedId(hash []string) ([]string, error) {
 		return []string{}, err
 	}
 
-	data, _ := GetExistingStringAndIndex(ret)
+	data, _ := runtime.GetExistingStringAndIndex(ret)
 
 	if len(data) == 0 {
 		msg := "No hash matched"
@@ -299,7 +541,7 @@ func getMapKeys(m map[string][]int) []string {
 	return rets
 }
 
-func (s *RSABlindRuntime) matchIDAndSendData(msg *Message) error {
+func (s *RSABlindRuntime) matchIDAndSendData(msg *runtime.Message) error {
 	hash := make([]string, len(msg.Data))
 	for i, ele := range msg.Data {
 		hash[i] = string(ele)
@@ -399,7 +641,7 @@ func (s *RSABlindRuntime) matchIDAndSendData(msg *Message) error {
 		return err
 	}
 
-	if err := s.producer.SendStruct(&Message{
+	if err := s.producer.SendStruct(&runtime.Message{
 		Algorithm: s.algorithm,
 		Step: rsa_blind.StepExchangeData,
 		SessionKey: msg.SessionKey,
@@ -416,7 +658,7 @@ func (s *RSABlindRuntime) matchIDAndSendData(msg *Message) error {
 	return nil
 }
 
-func (s *RSABlindRuntime) loadDataToGraphDB(msg *Message) error {
+func (s *RSABlindRuntime) loadDataToGraphDB(msg *runtime.Message) error {
 	data := msg.Data
 	if len(data) != 3 {
 		log.WithField("message", msg).Error("The data field of StepExchangeData message has wrong format")
@@ -458,166 +700,19 @@ func (s *RSABlindRuntime) loadDataToGraphDB(msg *Message) error {
 	return nil
 }
 
-func (s *RSABlindRuntime) runClient() error {
-	// get data from consumer
-	msgChan := make(chan Message)
-	go s.receiveMessage(msgChan)
-
-	fetchGraphTicker := time.NewTicker(time.Duration(s.fetchInterval) * time.Second)
-	defer fetchGraphTicker.Stop()
-
-	log.Info("Waiting for incoming message")
-	// client loop
-	for {
-		select {
-		case <-fetchGraphTicker.C:
-			log.Info("Fetch data from graph database periodically")
-			// check whether key exchanging finished
-			if !s.intersect.HasPubKey() {
-				log.Warn("The client hasn't got pubkey yet, skip")
-				continue
-			}
-
-			// fetch data
-			data, newTime, err := s.lookupNewData()
-			if err != nil {
-				log.Errorf("Failed to fetch data from graph database, err: %s", err)
-				continue
-			}
-
-			if len(data) == 0 {
-				var lastTime string
-				if s.lastGraphFetchTime == nil {
-					lastTime = "no start time"
-				} else {
-					lastTime = s.lastGraphFetchTime.String()
-				}
-				log.WithFields(log.Fields{
-					"start_time": lastTime,
-					"end_time": newTime,
-				}).Info("No new data found in graph database")
-				s.lastGraphFetchTime = &newTime
-				continue
-			}
-
-			yb, rands, err := s.intersect.ClientBlinding(data)
-			if err != nil {
-				log.WithField("data", data).Errorf("ClientBlinding failed, err: %s", err)
-				continue
-			}
-
-			// send message to mq
-			step := rsa_blind.StepClientBlind
-			sessionKey := generateSessionKey(s.algorithm, step)
-
-			if err = s.sendMessageOrError(&Message{
-				Algorithm: s.algorithm,
-				Step: step,
-				SessionKey: sessionKey,
-				Data: rsa_blind.BigIntsToBytesSlice(yb),
-			}); err != nil {
-				continue
-			}
-
-			// Send original data to kv
-			if err = s.sendOriginData(sessionKey, data); err != nil {
-				continue
-			}
-
-			// Send rands to kv
-			if err = s.sendRands(sessionKey, rands); err != nil {
-				continue
-			}
-
-			s.lastGraphFetchTime = &newTime
-			log.Info("Client got new data from db, blind it, and send to host")
-		case msg := <-msgChan:
-			// process received message
-			if step := msg.Step; step == rsa_blind.StepHostSendPubKey {
-				log.Info("Client received pubkey from host")
-				if s.intersect.HasPubKey() {
-					log.Warning("Client has already had pubkey, skip")
-				}
-
-				if len(msg.Key.N) == 0 || msg.Key.E <= 0 {
-					log.WithField("msg", msg).Warning("Client received invalid pubkey")
-					s.sendShutdown(msg.SessionKey)
-					continue
-				}
-
-				s.intersect.SetPubKey(msg.Key.N, msg.Key.E)
-
-				// send ack message
-				s.sendMessageOrError(&Message{
-					Algorithm: s.algorithm,
-					Step: rsa_blind.StepClientRcvPubKey,
-					SessionKey: msg.SessionKey,
-				})
-			} else if step == rsa_blind.StepHostBlindSign {
-				log.Info("Client starts to unblind signs from host")
-
-				// get rands from kv
-				rands, err := s.getRands(msg.SessionKey)
-				if err != nil {
-					continue
-				}
-
-				tb := s.intersect.ClientUnblinding(rsa_blind.BytesSliceToBigInts(msg.Data), rands)
-
-				s.sendMessageOrError(&Message{
-					Algorithm: s.algorithm,
-					Step: rsa_blind.StepClientUnblind,
-					SessionKey: msg.SessionKey,
-					Data: tb,
-				})
-
-				// get origin data
-				data, err := s.getOriginData(msg.SessionKey)
-				if err != nil {
-					continue
-				}
-
-				// combine hash and data, and send to kv
-				if err = s.createAndSendHashIDMap(data, tb); err != nil {
-					continue
-				}
-
-				// delete rands
-				s.delRands(msg.SessionKey)
-				log.Info("Client unblind the sign from host and send the hash to host")
-			} else if step == rsa_blind.StepHostHash {
-				// compare hash with current ID
-				log.Info("Client starts to compare hash from host")
-				if err := s.matchIDAndSendData(&msg); err != nil {
-					continue
-				}
-			} else if step == rsa_blind.StepExchangeData {
-				// load data to nebula graph
-				if err := s.loadDataToGraphDB(&msg); err != nil {
-					continue
-				}
-
-			} else {
-				log.WithField("msg", msg).Warning("Client received a message with wrong step")
-				continue
-			}
-		}
-		
-	}
-}
 
 func (s *RSABlindRuntime) pubKeyExchange() {
 	log.Info("Host send pubkey to client")
 	step := rsa_blind.StepHostSendPubKey
-	sessionKey := generateSessionKey(s.algorithm, step)
+	sessionKey := runtime.GenerateSessionKey(s.algorithm, step)
 	n, e := s.intersect.GetPubKey()
-	key := Key{
+	key := runtime.Key{
 		N: n,
 		E: e,
 	}
 
 	// TODO(knwng): need to retry here
-	if err := s.producer.SendStruct(&Message{
+	if err := s.producer.SendStruct(&runtime.Message{
 		Algorithm: s.algorithm,
 		Step: step,
 		SessionKey: sessionKey,
@@ -627,7 +722,7 @@ func (s *RSABlindRuntime) pubKeyExchange() {
 	}
 
 	// receive message from consumer
-	msgChan := make(chan Message)
+	msgChan := make(chan runtime.Message)
 	go s.receiveMessage(msgChan)
 
 	log.Info("Host's waiting for ack of pubkey from client")
@@ -644,110 +739,6 @@ func (s *RSABlindRuntime) pubKeyExchange() {
 				Fatal("Host didn't receive client's ack after sending pubkey")
 		}
 	}
-}
-
-func (s *RSABlindRuntime) runHost() error {
-	// pubkey exchange
-	s.pubKeyExchange()
-
-	// receive message from consumer
-	msgChan := make(chan Message)
-	go s.receiveMessage(msgChan)
-
-	fetchGraphTicker := time.NewTicker(time.Duration(s.fetchInterval) * time.Second)
-	defer fetchGraphTicker.Stop()
-
-	log.Info("Waiting for incoming message")
-	// host loop
-	for {
-		select {
-		case <-fetchGraphTicker.C:
-			log.Info("Fetch data from graph database periodically")
-			data, newTime, err := s.lookupNewData()
-			if err != nil {
-				log.Errorf("Failed to fetch data from graph database, err: %s", err)
-				continue
-			}
-
-			if len(data) == 0 {
-				var lastTime string
-				if s.lastGraphFetchTime == nil {
-					lastTime = "no start time"
-				} else {
-					lastTime = s.lastGraphFetchTime.String()
-				}
-				log.WithFields(log.Fields{
-					"start_time": lastTime,
-					"end_time": newTime,
-				}).Info("No new data found in graph database")
-				s.lastGraphFetchTime = &newTime
-				continue
-			}
-
-			ta := s.intersect.HostOfflineHash(data)
-
-			// send hash-data map to kv
-			hashDataMap := make(map[string]string)
-			for i, hash := range ta {
-				hashDataMap[string(hash)] = data[i]
-			}
-			if err = s.kv.HashPut("hash_id_map", hashDataMap); err != nil {
-				log.WithFields(log.Fields{
-					"hash_data_map": hashDataMap,
-					"error": err,
-				}).Error("Failed to send hash-data map to kv")
-				continue
-			}
-
-			step := rsa_blind.StepHostHash
-
-			sessionKey := generateSessionKey(s.algorithm, step)
-
-			if err = s.sendMessageOrError(&Message{
-				Algorithm: s.algorithm,
-				Step: step,
-				SessionKey: sessionKey,
-				Data: ta,
-			}); err != nil {
-				continue
-			}
-
-			s.lastGraphFetchTime = &newTime
-			log.Info("Host got data from graph db, calculated hash and sent it to client")
-		case msg := <-msgChan:
-			// process message received from mq
-			if step := msg.Step; step == rsa_blind.StepClientBlind {
-				log.Info("Host starts to blind sign hash from client")
-				zb := s.intersect.HostBlindSigning(rsa_blind.BytesSliceToBigInts(msg.Data))
-				s.sendMessageOrError(&Message{
-					Algorithm: s.algorithm,
-					Step: rsa_blind.StepHostBlindSign,
-					SessionKey: msg.SessionKey,
-					Data: rsa_blind.BigIntsToBytesSlice(zb),
-				})
-			} else if step == rsa_blind.StepClientUnblind {
-				// compare hash with current ID
-				log.Info("Host starts to compare hash from client")
-				if err := s.matchIDAndSendData(&msg); err != nil {
-					continue
-				}
-
-			} else if step == rsa_blind.StepClientRcvPubKey {
-				// consume reluctant pubkey ack message
-				log.Info("Host received pubkey ack from client after key exchange, skip")
-			} else if step == rsa_blind.StepExchangeData {
-				// load data to nebula graph
-				if err := s.loadDataToGraphDB(&msg); err != nil {
-					continue
-				}
-
-			} else {
-				log.WithField("msg", msg).Warning("Host received a message with wrong step")
-				continue
-			}
-		}
-	}
-
 }
 
 func bytesSliceToStringSlice(data [][]byte) []string {

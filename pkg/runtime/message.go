@@ -33,7 +33,7 @@ func ReadSchema(filename string) (string, error) {
 	return schemaStr, nil
 }
 
-func generateSessionKey(algorithm string, step rsa_blind.RSAStep) string {
+func GenerateSessionKey(algorithm string, step rsa_blind.RSAStep) string {
 	current := time.Now().String()
 	key := sha256.Sum256([]byte(strings.Join([]string{algorithm, string(step), current}, "-")))
 	return "" + base64.StdEncoding.EncodeToString(key[:])
